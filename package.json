@@ -1,5 +1,9 @@
 {
-  "dependencies": {
-    "serverless-add-api-key": "^4.2.1"
+  "scripts": {
+    "build": "bundle install && serverless package",
+    "deploy": "serverless deploy --package .serverless"
+  },
+  "devDependencies": {
+    "serverless": "^3.0.0"
   }
 }

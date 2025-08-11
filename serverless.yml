@@ -1,115 +1,115 @@
-service: $APPLICATION
+service: ranger-api
+frameworkVersion: '3'
 
 provider:
   name: aws
-  architecture: arm64
-  ecr:
-    images:
-      cloud-template-lambda:
-        path: ./
   runtime: ruby3.2
-  profile: default
-  stage: $STAGE
-  region: $REGION
+  region: ap-southeast-2
+  stage: ${opt:stage, 'dev'}
+  memorySize: 512
+  timeout: 30
   environment:
-    STAGE: $STAGE
-
-plugins:
-  - serverless-add-api-key
-
-custom:
-  databaseUrl: $DATABASE_URL
-  apiKeys:
-    - name: $KEY
+    STAGE: ${self:provider.stage}
+    DYNAMODB_TABLE: ${self:service}-${self:provider.stage}-table
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - dynamodb:Query
+            - dynamodb:Scan
+            - dynamodb:GetItem
+            - dynamodb:PutItem
+            - dynamodb:UpdateItem
+            - dynamodb:DeleteItem
+          Resource:
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.DYNAMODB_TABLE}
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.DYNAMODB_TABLE}/index/*
+        - Effect: Allow
+          Action:
+            - sqs:SendMessage
+            - sqs:ReceiveMessage
+            - sqs:DeleteMessage
+          Resource:
+            - arn:aws:sqs:${self:provider.region}:*:${self:service}-${self:provider.stage}-dlq
 
 functions:
-  api_status:
-    image:
-      name: cloud-template-lambda
-      command:
-        - lib/lambda/handler.api_status
-      entryPoint:
-        - '/lambda-entrypoint.sh'
+  rangerApi:
+    handler: lib/lambda/handler.process
+    description: API status endpoint handler
     events:
       - http:
-          path: /status
+          path: api/v1/status
           method: get
-          cors: true
-          private: true
-  swagger_status:
-    image:
-      name: cloud-template-lambda
-      command:
-        - lib/lambda/handler.swagger_status
-      entryPoint:
-        - '/lambda-entrypoint.sh'
-    events:
-      - http:
-          path: /swagger
-          method: get
-          cors: true
-  get_person_by_id:
-    image:
-      name: cloud-template-lambda
-      command:
-        - lib/lambda/handler.get_person_by_id
-      entryPoint:
-        - '/lambda-entrypoint.sh'
-    events:
-      - http:
-          path: /person/{id}
-          method: get
-          cors: true
-          private: true
-  get_person:
-    image:
-      name: cloud-template-lambda
-      command:
-        - lib/lambda/handler.get_person
-      entryPoint:
-        - '/lambda-entrypoint.sh'
-    events:
-      - http:
-          path: /person
-          method: get
-          cors: true
-          private: true
-  post_person:
-    image:
-      name: cloud-template-lambda
-      command:
-        - lib/lambda/handler.post_person
-      entryPoint:
-        - '/lambda-entrypoint.sh'
-    events:
-      - http:
-          path: /person
-          method: post
-          cors: true
-          private: true
-  put_person:
-    image:
-      name: cloud-template-lambda
-      command:
-        - lib/lambda/handler.put_person
-      entryPoint:
-        - '/lambda-entrypoint.sh'
-    events:
-      - http:
-          path: /person/{id}
-          method: put
-          cors: true
-          private: true
-  delete_person:
-    image:
-      name: cloud-template-lambda
-      command:
-        - lib/lambda/handler.delete_person
-      entryPoint:
-        - '/lambda-entrypoint.sh'
-    events:
-      - http:
-          path: /person/{id}
-          method: delete
-          cors: true
-          private: true
+          cors:
+            origin: '*'
+            headers:
+              - Content-Type
+              - X-Amz-Date
+              - Authorization
+              - X-Api-Key
+              - X-Amz-Security-Token
+              - X-Amz-User-Agent
+    deadLetter:
+      targetArn:
+        Fn::GetAtt:
+          - DeadLetterQueue
+          - Arn
+
+resources:
+  Resources:
+    DynamoDBTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.DYNAMODB_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: id
+            KeyType: HASH
+        StreamSpecification:
+          StreamViewType: NEW_AND_OLD_IMAGES
+        Tags:
+          - Key: Service
+            Value: ${self:service}
+          - Key: Stage
+            Value: ${self:provider.stage}
+
+    DeadLetterQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:service}-${self:provider.stage}-dlq
+        MessageRetentionPeriod: 1209600
+        VisibilityTimeout: 60
+        Tags:
+          - Key: Service
+            Value: ${self:service}
+          - Key: Stage
+            Value: ${self:provider.stage}
+
+  Outputs:
+    DynamoDBTableName:
+      Description: DynamoDB table name
+      Value:
+        Ref: DynamoDBTable
+
+    DynamoDBTableArn:
+      Description: DynamoDB table ARN
+      Value:
+        Fn::GetAtt:
+          - DynamoDBTable
+          - Arn
+
+    DeadLetterQueueUrl:
+      Description: Dead Letter Queue URL
+      Value:
+        Ref: DeadLetterQueue
+
+    DeadLetterQueueArn:
+      Description: Dead Letter Queue ARN
+      Value:
+        Fn::GetAtt:
+          - DeadLetterQueue
+          - Arn
